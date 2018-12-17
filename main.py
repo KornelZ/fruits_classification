@@ -43,7 +43,6 @@ def batch(data, labels):
     for i in range(0, len(labels), BATCH_SIZE):
         if i + BATCH_SIZE >= len(labels):
             yield data[i:], labels[i:]
-            break
         else:
             yield data[i:i+BATCH_SIZE], labels[i:i+BATCH_SIZE]
 
