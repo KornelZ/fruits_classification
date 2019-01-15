@@ -1,23 +1,70 @@
 import numpy as np
 import tensorflow as tf
 import sklearn.datasets
+import sklearn.metrics
 import keras_preprocessing.image as img
 import matplotlib.pyplot as plt
+import datetime
+import itertools
 
 TRAIN_PATH = "fruits-360/Training"
 TEST_PATH = "fruits-360/Test"
+USE_SMALL_DATASET = False
+SMALL_DATASET_CLASS_NUM = 20
+
 TRAIN_PERCENT = 0.7
 PIXEL_DEPTH = 255
-CLASSIFIER = "CNN"  # or DNN
+CLASSIFIER = "DNN"  # or DNN
 IMG_SIZE = 100
 
 LEARNING_RATE = 0.001
-BATCH_SIZE = 64
-EPOCHS = 1
 
 # MLP parameters
 SIZE_1 = 200
 SIZE_2 = 100
+
+BATCH_SIZE = 32
+EPOCHS = 20
+
+
+def get_small_dataset(x, y):
+    if not USE_SMALL_DATASET:
+        return x, y
+    x, y = zip(*((data, label) for data, label in zip(x, y) if label < SMALL_DATASET_CLASS_NUM))
+    return np.array(x), np.array(y)
+
+
+def get_figure_file_name(fig_name):
+    cur_day = datetime.datetime.today().strftime('%Y-%m-%d-%H-%M-%S')
+    return fig_name + "_" + cur_day + ".png"
+
+
+def plot_confusion_matrix(cm, classes, title='Confusion matrix', cmap=plt.cm.Blues):
+        '''
+        Plots confusion matrix,
+        cm - confusion matrix
+        '''
+        plt.imshow(cm, interpolation='nearest', cmap=cmap)
+        plt.title(title)
+        plt.colorbar()
+        tick_marks = np.arange(len(classes))
+        plt.xticks(tick_marks, classes, rotation=45)
+        plt.yticks(tick_marks, classes)
+
+        # digit format
+        fmt = 'd'
+        # threshold for coloring the figure
+        thresh = cm.max() / 2.
+        for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+            plt.text(j, i, format(cm[i, j], fmt),
+                     horizontalalignment="center",
+                     color="white" if cm[i, j] > thresh else "black")
+
+        plt.ylabel('True label')
+        plt.xlabel('Predicted label')
+        plt.savefig(get_figure_file_name("cm"))
+        print('Confusion matrix saved.')
+        plt.close()
 
 
 def plot_history(epochs, y, line, ylabel):
@@ -27,6 +74,7 @@ def plot_history(epochs, y, line, ylabel):
 
     plt.xlabel("EPOCHS")
     plt.ylabel(ylabel)
+    plt.savefig(get_figure_file_name(ylabel))
     plt.show()
 
 
@@ -49,7 +97,11 @@ def norm(data):
     return data / PIXEL_DEPTH
 
 
-def batch(data, labels):
+def batch(data, labels, randomize=True):
+    if randomize:
+        perm = np.random.permutation(len(labels))
+        data, labels = data[perm], labels[perm]
+
     for i in range(0, len(labels), BATCH_SIZE):
         if i + BATCH_SIZE >= len(labels):
             yield data[i:], labels[i:]
@@ -58,17 +110,15 @@ def batch(data, labels):
 
 
 print("Loading data paths")
-train_data, train_labels = load(TRAIN_PATH)
+train_data, train_labels = get_small_dataset(*load(TRAIN_PATH))
 perm = np.random.permutation(len(train_labels))
 train_data, train_labels = train_data[perm], train_labels[perm]
 
-test_data, test_labels = load(TEST_PATH)
-perm = np.random.permutation((len(test_labels)))
-test_data, test_labels = test_data[perm], test_labels[perm]
-
+test_data, test_labels = get_small_dataset(*load(TEST_PATH))
 
 print("One-hot encoding")
 num_classes = len(np.unique(train_labels))
+print("Number of classes:", num_classes)
 if num_classes < len(np.unique(test_labels)):
     raise Exception("Too many classes in test labels")
 train_labels = one_hot(train_labels, num_classes)
@@ -79,8 +129,8 @@ train_size = int(TRAIN_PERCENT * train_labels.shape[0])
 valid_data = norm(load_images(train_data[train_size:]))
 valid_labels = train_labels[train_size:]
 print("Loading training set")
-train_data = norm(load_images(test_data[:100]))
-train_labels = test_labels[:100]
+train_data = norm(load_images(train_data[:train_size]))
+train_labels = train_labels[:train_size]
 print("Loading test set")
 test_data = norm(load_images(test_data))
 
@@ -123,36 +173,44 @@ def cnn(num_classes):
             return tf.matmul(prev, w) + b
 
         net = conv(x, prev_channels=3, filter_size=5, num_filters=16)
+        print("First layer: ", net.shape)
         net = conv(net, prev_channels=16, filter_size=5, num_filters=32)
+        print("Second layer: ", net.shape)
+        net = conv(net, prev_channels=32, filter_size=5, num_filters=64)
+        print("Third layer: ", net.shape)
         dense_size = int(net.shape[1] * net.shape[2] * net.shape[3])
         net = tf.reshape(net, [-1, dense_size])
         net = dense(net, prev_size=dense_size, out_size=num_classes)
-
+        pred = tf.argmax(net, axis=1)
+        print("Last layer {} : in size {}".format(dense_size, net.shape))
         loss = tf.reduce_mean(
             tf.nn.softmax_cross_entropy_with_logits_v2(logits=net, labels=y)
         )
         accuracy = tf.reduce_mean(tf.cast(tf.equal(
-            tf.argmax(tf.nn.softmax(net), axis=1),
+            tf.argmax(net, axis=1),
             tf.argmax(y, axis=1)
         ), dtype=np.float32))
         global_step = tf.Variable(0)
         optimizer = tf.train.AdamOptimizer(LEARNING_RATE)\
             .minimize(loss, global_step=global_step)
 
-        def batch_run(data, labels):
+        def batch_run(data, labels, get_pred=False):
             valid_loss = 0
             valid_acc = 0
             i = 0
-
-            for batch_data, batch_labels in batch(data, labels):
+            predictions = []
+            for batch_data, batch_labels in batch(data, labels, not get_pred):
                 feed_dict = {x: batch_data, y: batch_labels}
-
-                v_loss, v_acc = session.run([loss, accuracy], feed_dict=feed_dict)
-                valid_loss += v_loss
-                valid_acc += v_acc
-                i += 1
+                length = len(batch_labels)
+                v_pred, v_loss, v_acc = session.run([pred, loss, accuracy], feed_dict=feed_dict)
+                valid_loss += v_loss * length
+                valid_acc += v_acc * length
+                i += length
+                predictions.append(v_pred)
             valid_acc /= i
             valid_loss /= i
+            if get_pred:
+                return valid_loss, valid_acc, np.concatenate(predictions)
             return valid_loss, valid_acc
 
         session = tf.Session()
@@ -168,31 +226,36 @@ def cnn(num_classes):
                 i = 0
                 train_loss = 0
                 train_acc = 0
-
+                total_length = 0
                 for batch_data, batch_labels in batch(train_data, train_labels):
                     feed_dict = {x: batch_data, y: batch_labels}
-
+                    length = len(batch_labels)
                     _, t_loss, t_acc = session.run([optimizer, loss, accuracy], feed_dict=feed_dict)
-                    train_loss += t_loss
-                    train_acc += t_acc
-                    if (i + 1) % 10 == 0 or i + 1 == total:
-                        print("Batch {}/{} loss {}, batch acc {}".format(i + 1, total, t_loss, t_acc))
+                    train_loss += t_loss * length
+                    train_acc += t_acc * length
+                    total_length += length
                     i += 1
-                train_acc /= i
-                train_loss /= i
+                    if i % 50 == 0 or i == total:
+                        print("Batch {}/{} loss {}, batch acc {}".format(i, total,
+                                                                         t_loss, t_acc))
+                train_acc /= total_length
+                train_loss /= total_length
                 train_loss_history.append(train_loss)
                 train_acc_history.append(train_acc)
                 print("EPOCH: ", ep + 1)
-                print("Train loss {}, train acc {}".format(train_loss, train_acc))
-                # VALIDATION
+                print("Train avg loss {}, train avg acc {}".format(train_loss, train_acc))
+                #VALIDATION
                 valid_loss, valid_acc = batch_run(valid_data, valid_labels)
                 valid_loss_history.append(valid_loss)
                 valid_acc_history.append(valid_acc)
                 print("Valid loss {}, valid acc {}".format(valid_loss, valid_acc))
-            test_loss, test_acc = batch_run(test_data, test_labels)
+            test_loss, test_acc, test_pred = batch_run(test_data, test_labels, True)
             print("Test loss {}, test acc {}".format(test_loss, test_acc))
-            plot_history(EPOCHS, [train_loss, valid_loss], ["r--", "b--"], "LOSS")
-            plot_history(EPOCHS, [train_acc, valid_acc], ["r:", "b:"], "ACCURACY")
+            plot_history(EPOCHS, [train_loss_history, valid_loss_history], ["r--", "b--"], "LOSS")
+            plot_history(EPOCHS, [train_acc_history, valid_acc_history], ["r:", "b:"], "ACCURACY")
+            if USE_SMALL_DATASET:
+                cm = sklearn.metrics.confusion_matrix(np.argmax(test_labels, axis=1), test_pred)
+                plot_confusion_matrix(cm, np.unique(train_labels))
 
 
 def mlp(num_classes):
@@ -280,9 +343,11 @@ def mlp(num_classes):
                 print("Valid loss {}, valid acc {}".format(valid_loss, valid_acc))
             test_loss, test_acc = batch_run(test_data, test_labels)
             print("Test loss {}, test acc {}".format(test_loss, test_acc))
-            plot_history(EPOCHS, [train_loss, valid_loss], ["r--", "b--"], "LOSS")
-            plot_history(EPOCHS, [train_acc, valid_acc], ["r:", "b:"], "ACCURACY")
+            plot_history(EPOCHS, [train_loss_history, valid_loss_history], ["r--", "b--"], "LOSS")
+            plot_history(EPOCHS, [train_acc_history, valid_acc_history], ["r:", "b:"], "ACCURACY")
 
 
-cnn(num_classes)
-mlp(num_classes)
+if CLASSIFIER == "CNN":
+    cnn(num_classes)
+else:
+    mlp(num_classes)
