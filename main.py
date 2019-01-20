@@ -9,16 +9,24 @@ import itertools
 
 TRAIN_PATH = "fruits-360/Training"
 TEST_PATH = "fruits-360/Test"
-USE_SMALL_DATASET = False
-SMALL_DATASET_CLASS_NUM = 20
+USE_SMALL_DATASET = True
+SMALL_DATASET_CLASS_NUM = 10
 
 TRAIN_PERCENT = 0.7
 PIXEL_DEPTH = 255
-CLASSIFIER = "DNN"  # or DNN
+CLASSIFIER = "CNN"  # or DNN
 IMG_SIZE = 100
 
 LEARNING_RATE = 0.001
 
+#CNN parameters
+CNN_LAYERS = [
+    [3, 5, 16],
+    [16, 5, 32],
+    [32, 5, 64]
+]
+
+MAX_POOLING = True
 # MLP parameters
 SIZE_1 = 200
 SIZE_2 = 100
@@ -158,10 +166,22 @@ def cnn(num_classes):
                                 strides=[1, 1, 1, 1],
                                 padding="SAME")
             conv = tf.nn.relu(conv + b)
-            return tf.nn.max_pool(value=conv,
-                                  ksize=[1, 2, 2, 1],
-                                  strides=[1, 2, 2, 1],
-                                  padding="SAME")
+
+            def pool(input_layer, ksize, strides, padding):
+                if MAX_POOLING:
+                    return tf.nn.max_pool(value=input_layer,
+                                          ksize=ksize,
+                                          strides=strides,
+                                          padding=padding)
+                else:
+                    return tf.nn.avg_pool(value=input_layer,
+                                          ksize=ksize,
+                                          strides=strides,
+                                          padding=padding)
+            return pool(input_layer=conv,
+                              ksize=[1, 2, 2, 1],
+                              strides=[1, 2, 2, 1],
+                              padding="SAME")
 
         def dense(prev, prev_size, out_size):
             w = tf.Variable(
@@ -171,13 +191,10 @@ def cnn(num_classes):
                 tf.constant(0.0, shape=[out_size])
             )
             return tf.matmul(prev, w) + b
+        net = x
+        for layer in CNN_LAYERS:
+            net = conv(net, prev_channels=layer[0], filter_size=layer[1], num_filters=layer[2])
 
-        net = conv(x, prev_channels=3, filter_size=5, num_filters=16)
-        print("First layer: ", net.shape)
-        net = conv(net, prev_channels=16, filter_size=5, num_filters=32)
-        print("Second layer: ", net.shape)
-        net = conv(net, prev_channels=32, filter_size=5, num_filters=64)
-        print("Third layer: ", net.shape)
         dense_size = int(net.shape[1] * net.shape[2] * net.shape[3])
         net = tf.reshape(net, [-1, dense_size])
         net = dense(net, prev_size=dense_size, out_size=num_classes)
@@ -279,7 +296,7 @@ def mlp(num_classes):
         net = dense(net, prev_size=SIZE_1, out_size=SIZE_1)
         net = dense(net, prev_size=SIZE_1, out_size=SIZE_2)
         net = dense(net, prev_size=SIZE_2, out_size=num_classes)
-
+        pred = tf.argmax(net, axis=1)
         loss = tf.reduce_mean(
             tf.nn.softmax_cross_entropy_with_logits_v2(logits=net, labels=y)
         )
@@ -291,21 +308,25 @@ def mlp(num_classes):
         optimizer = tf.train.AdamOptimizer(LEARNING_RATE)\
             .minimize(loss, global_step=global_step)
 
-        def batch_run(data, labels):
+        def batch_run(data, labels, get_pred=False):
             valid_loss = 0
             valid_acc = 0
             i = 0
-
-            for batch_data, batch_labels in batch(data, labels):
+            predictions = []
+            for batch_data, batch_labels in batch(data, labels, not get_pred):
                 feed_dict = {x: batch_data, y: batch_labels}
-
-                v_loss, v_acc = session.run([loss, accuracy], feed_dict=feed_dict)
-                valid_loss += v_loss
-                valid_acc += v_acc
-                i += 1
+                length = len(batch_labels)
+                v_pred, v_loss, v_acc = session.run([pred, loss, accuracy], feed_dict=feed_dict)
+                valid_loss += v_loss * length
+                valid_acc += v_acc * length
+                i += length
+                predictions.append(v_pred)
             valid_acc /= i
             valid_loss /= i
+            if get_pred:
+                return valid_loss, valid_acc, np.concatenate(predictions)
             return valid_loss, valid_acc
+
 
         session = tf.Session()
         with session.as_default():
@@ -341,11 +362,13 @@ def mlp(num_classes):
                 valid_loss_history.append(valid_loss)
                 valid_acc_history.append(valid_acc)
                 print("Valid loss {}, valid acc {}".format(valid_loss, valid_acc))
-            test_loss, test_acc = batch_run(test_data, test_labels)
+            test_loss, test_acc, test_pred = batch_run(test_data, test_labels, True)
             print("Test loss {}, test acc {}".format(test_loss, test_acc))
             plot_history(EPOCHS, [train_loss_history, valid_loss_history], ["r--", "b--"], "LOSS")
             plot_history(EPOCHS, [train_acc_history, valid_acc_history], ["r:", "b:"], "ACCURACY")
-
+            if USE_SMALL_DATASET:
+                cm = sklearn.metrics.confusion_matrix(np.argmax(test_labels, axis=1), test_pred)
+                plot_confusion_matrix(cm, np.unique(train_labels))
 
 if CLASSIFIER == "CNN":
     cnn(num_classes)
