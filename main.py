@@ -282,8 +282,6 @@ def cnn(num_classes):
                 last_valid_acc = valid_acc
                 print("Valid loss {}, valid acc {}".format(valid_loss, valid_acc))
             test_loss, test_acc, test_pred = batch_run(test_data, test_labels, True)
-            print(test_pred)
-            print(np.argmax(test_labels, axis=1))
             print("Test loss {}, test acc {}".format(test_loss, test_acc))
             plot_history(eps, [train_loss_history, valid_loss_history], ["r--", "b--"], "LOSS")
             plot_history(eps, [train_acc_history, valid_acc_history], ["r:", "b:"], "ACCURACY")
