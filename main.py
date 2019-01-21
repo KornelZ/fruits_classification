@@ -8,8 +8,8 @@ import datetime
 import itertools
 
 TRAIN_PATH = "fruits-360/Training"
-TEST_PATH = "fruits-360/Test"
-USE_SMALL_DATASET = True
+TEST_PATH = "fruits-360/Test" #"fruits-360/RawImages"
+USE_SMALL_DATASET = False
 SMALL_DATASET_CLASS_NUM = 10
 
 TRAIN_PERCENT = 0.7
@@ -20,6 +20,8 @@ IMG_SIZE = 100
 LEARNING_RATE = 0.001
 
 #CNN parameters
+
+BREAK_EARLY = False
 CNN_LAYERS = [
     [3, 5, 16],
     [16, 5, 32],
@@ -36,6 +38,7 @@ EPOCHS = 20
 
 
 def get_small_dataset(x, y):
+    """Zwraca maly dataset o liczbie klas SMALL_DATASET_CLASS_NUM"""
     if not USE_SMALL_DATASET:
         return x, y
     x, y = zip(*((data, label) for data, label in zip(x, y) if label < SMALL_DATASET_CLASS_NUM))
@@ -43,15 +46,13 @@ def get_small_dataset(x, y):
 
 
 def get_figure_file_name(fig_name):
+    """Generuje nazwe pliku rok-miesiac-dzien-godz-min-sek"""
     cur_day = datetime.datetime.today().strftime('%Y-%m-%d-%H-%M-%S')
     return fig_name + "_" + cur_day + ".png"
 
 
 def plot_confusion_matrix(cm, classes, title='Confusion matrix', cmap=plt.cm.Blues):
-        '''
-        Plots confusion matrix,
-        cm - confusion matrix
-        '''
+        """Rysuje confusion matrix dla malego datasetu"""
         plt.imshow(cm, interpolation='nearest', cmap=cmap)
         plt.title(title)
         plt.colorbar()
@@ -76,6 +77,7 @@ def plot_confusion_matrix(cm, classes, title='Confusion matrix', cmap=plt.cm.Blu
 
 
 def plot_history(epochs, y, line, ylabel):
+    """Rysuje wykres wartosci parametru w zaleznosci od iteracji"""
     ep = np.arange(0, epochs)
     for i in range(len(y)):
         plt.plot(ep, y[i], line[i])
@@ -87,25 +89,30 @@ def plot_history(epochs, y, line, ylabel):
 
 
 def load(path):
+    """Laduje dataset z danej sciezki"""
     dataset = sklearn.datasets.load_files(path)
     return np.array(dataset["filenames"]),\
             np.array(dataset["target"])
 
 
 def one_hot(labels, num_classes):
+    """Przeprowadza one-hot encoding [0, ..., 0, 1..., 0] na etykietach"""
     return np.eye(num_classes, dtype=np.float32)[labels]
 
 
 def load_images(paths):
+    """Laduje obrazy ze wskazanych sciezek jako NumPy array"""
     return np.array([img.img_to_array(img.load_img(p)) for p in paths],
                     dtype=np.float32)
 
 
 def norm(data):
+    """Normalizuje obraz do skali [0-1]"""
     return data / PIXEL_DEPTH
 
 
 def batch(data, labels, randomize=True):
+    """Generuje batch danych, losowy dla treningu"""
     if randomize:
         perm = np.random.permutation(len(labels))
         data, labels = data[perm], labels[perm]
@@ -122,7 +129,7 @@ train_data, train_labels = get_small_dataset(*load(TRAIN_PATH))
 perm = np.random.permutation(len(train_labels))
 train_data, train_labels = train_data[perm], train_labels[perm]
 
-test_data, test_labels = get_small_dataset(*load(TEST_PATH))
+test_data_paths, test_labels = get_small_dataset(*load(TEST_PATH))
 
 print("One-hot encoding")
 num_classes = len(np.unique(train_labels))
@@ -140,13 +147,14 @@ print("Loading training set")
 train_data = norm(load_images(train_data[:train_size]))
 train_labels = train_labels[:train_size]
 print("Loading test set")
-test_data = norm(load_images(test_data))
+test_data = norm(load_images(test_data_paths))
 
 print("Train size {}, Valid size {}, Test size {}"
       .format(train_data.shape, valid_data.shape, test_data.shape))
 
 
 def cnn(num_classes):
+    """Tworzy siec konwolucyjną dla danej liczby klas"""
     print("Building CNN")
     graph = tf.Graph()
     with graph.as_default():
@@ -238,7 +246,10 @@ def cnn(num_classes):
             valid_loss_history = []
             valid_acc_history = []
             total = int(np.ceil(len(train_labels) / BATCH_SIZE))
+            last_valid_acc = -1
+            eps = 0
             for ep in range(EPOCHS):
+                eps += 1
                 print("EPOCH: ", ep + 1)
                 i = 0
                 train_loss = 0
@@ -265,17 +276,24 @@ def cnn(num_classes):
                 valid_loss, valid_acc = batch_run(valid_data, valid_labels)
                 valid_loss_history.append(valid_loss)
                 valid_acc_history.append(valid_acc)
+                if valid_acc < last_valid_acc and BREAK_EARLY:
+                    print("Early break, valid accuracy dropped")
+                    break
+                last_valid_acc = valid_acc
                 print("Valid loss {}, valid acc {}".format(valid_loss, valid_acc))
             test_loss, test_acc, test_pred = batch_run(test_data, test_labels, True)
+            print(test_pred)
+            print(np.argmax(test_labels, axis=1))
             print("Test loss {}, test acc {}".format(test_loss, test_acc))
-            plot_history(EPOCHS, [train_loss_history, valid_loss_history], ["r--", "b--"], "LOSS")
-            plot_history(EPOCHS, [train_acc_history, valid_acc_history], ["r:", "b:"], "ACCURACY")
+            plot_history(eps, [train_loss_history, valid_loss_history], ["r--", "b--"], "LOSS")
+            plot_history(eps, [train_acc_history, valid_acc_history], ["r:", "b:"], "ACCURACY")
             if USE_SMALL_DATASET:
                 cm = sklearn.metrics.confusion_matrix(np.argmax(test_labels, axis=1), test_pred)
                 plot_confusion_matrix(cm, np.unique(train_labels))
 
 
 def mlp(num_classes):
+    """Tworzy wielowarstwowy perceptron dla danej liczby klas"""
     print("Building MLP")
     graph = tf.Graph()
     with graph.as_default():
@@ -292,9 +310,9 @@ def mlp(num_classes):
             return tf.matmul(prev, w) + b
 
         net = tf.reshape(x, [-1, IMG_SIZE*IMG_SIZE*3])
-        net = dense(net, prev_size=IMG_SIZE*IMG_SIZE*3, out_size=SIZE_1)
-        net = dense(net, prev_size=SIZE_1, out_size=SIZE_1)
-        net = dense(net, prev_size=SIZE_1, out_size=SIZE_2)
+        net = (dense(net, prev_size=IMG_SIZE*IMG_SIZE*3, out_size=SIZE_1))
+        net = (dense(net, prev_size=SIZE_1, out_size=SIZE_1))
+        net = (dense(net, prev_size=SIZE_1, out_size=SIZE_2))
         net = dense(net, prev_size=SIZE_2, out_size=num_classes)
         pred = tf.argmax(net, axis=1)
         loss = tf.reduce_mean(
@@ -335,8 +353,11 @@ def mlp(num_classes):
             train_acc_history = []
             valid_loss_history = []
             valid_acc_history = []
+            eps = 0
+            last_valid_acc = -1
             total = int(np.ceil(len(train_labels) / BATCH_SIZE))
             for ep in range(EPOCHS):
+                eps += 1
                 print("EPOCH: ", ep + 1)
                 i = 0
                 train_loss = 0
@@ -361,16 +382,22 @@ def mlp(num_classes):
                 valid_loss, valid_acc = batch_run(valid_data, valid_labels)
                 valid_loss_history.append(valid_loss)
                 valid_acc_history.append(valid_acc)
+                if valid_acc < last_valid_acc and BREAK_EARLY:
+                    print("Early break, valid accuracy dropped")
+                    break
+                last_valid_acc = valid_acc
                 print("Valid loss {}, valid acc {}".format(valid_loss, valid_acc))
             test_loss, test_acc, test_pred = batch_run(test_data, test_labels, True)
             print("Test loss {}, test acc {}".format(test_loss, test_acc))
-            plot_history(EPOCHS, [train_loss_history, valid_loss_history], ["r--", "b--"], "LOSS")
-            plot_history(EPOCHS, [train_acc_history, valid_acc_history], ["r:", "b:"], "ACCURACY")
+            plot_history(eps, [train_loss_history, valid_loss_history], ["r--", "b--"], "LOSS")
+            plot_history(eps, [train_acc_history, valid_acc_history], ["r:", "b:"], "ACCURACY")
             if USE_SMALL_DATASET:
                 cm = sklearn.metrics.confusion_matrix(np.argmax(test_labels, axis=1), test_pred)
                 plot_confusion_matrix(cm, np.unique(train_labels))
 
+
 if CLASSIFIER == "CNN":
+    #grid_search()
     cnn(num_classes)
 else:
     mlp(num_classes)
