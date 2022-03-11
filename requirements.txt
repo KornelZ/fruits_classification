@@ -16,7 +16,7 @@ matplotlib==3.0.0
 networkx==2.1
 numpy==1.15.2
 pefile==2017.11.5
-Pillow==5.4.1
+Pillow==9.0.1
 protobuf==3.6.1
 PyInstaller==3.3.1
 pyparsing==2.2.2
