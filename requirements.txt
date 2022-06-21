@@ -14,7 +14,7 @@ macholib==1.9
 Markdown==3.0.1
 matplotlib==3.0.0
 networkx==2.1
-numpy==1.15.2
+numpy==1.22.0
 pefile==2017.11.5
 Pillow==5.4.1
 protobuf==3.6.1
